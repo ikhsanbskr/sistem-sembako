@@ -1,37 +1,49 @@
-# Aplikasi Pengadaan Sembako (Google Apps Script)
+# Grocery Installment & Procurement System (Google Apps Script)
 
-Aplikasi web berbasis **Google Apps Script (GAS)** dan **Google Sheets** untuk mencatat pesanan paket/barang sembako dengan pembayaran setoran bertahap (default 46 minggu), memantau progres dan sisa setoran, serta merekap kebutuhan belanja pengadaan.
+A lightweight web application built with **Google Apps Script (GAS)** and **Google Sheets** to manage installment-based grocery (*sembako*) orders ahead of Eid, track weekly payment progress and remaining balances, and aggregate supplier procurement needs.
 
-## Struktur Berkas
+## Key Features
 
-- `appsscript.json` — Konfigurasi manifest GAS (V8 runtime, zona waktu `Asia/Jakarta`, *scopes*).
-- `Config.gs` — Konstanta aplikasi, skema 8 sheet (`Customer`, `Produk`, `Paket`, `Paket_Item`, `Order`, `Order_Item`, `Setoran`, `Pengaturan`), dan inisialisasi database (`initDatabase`).
-- `Auth.gs` — Otorisasi berbasis email Google (`Admin` & `Staf`).
-- `Utils.gs` — Utilitas `LockService`, `CacheService`, pembacaan/penulisan batch, dan penomoran otomatis (`ORD-YYYY-0001`, `STR-YYYY-0001`).
-- `CustomerService.gs` — CRUD Customer dan ringkasan riwayat order/setoran customer.
-- `CatalogService.gs` — CRUD Produk dan Paket Sembako beserta komposisi `Paket_Item`.
-- `OrderService.gs` — Pembuatan order, harga *snapshot*, perhitungan target mingguan & progres jadwal, pembatalan/hapus, dan penyerahan barang.
-- `SetoranService.gs` — Pencatatan setoran dengan validasi sisa setoran dan pembaruan status **Lunas** otomatis.
-- `DashboardReportService.gs` — Data Dashboard, Rekapan (Kebutuhan Barang, Per Customer, Per Periode, Per Produk/Paket), ekspor Google Sheets/CSV, dan *backup* harian ke Drive.
-- `Code.gs` — `doGet()` dan *endpoint* API untuk antarmuka web.
-- `Index.html`, `Styles.html`, `Scripts.html` — Antarmuka web responsif (*HtmlService*).
+- **Dashboard**: Real-time summary cards (active orders, total payments received, remaining balance, fully paid customers), weekly/monthly collections, overdue/behind-schedule customer alerts, upcoming due dates, and top remaining balances.
+- **Customer Management**: Create, update, search, and deactivate customers, including inline quick-add directly from the order form and a detailed view with cumulative payment history.
+- **Products & Packages**: Manage master products (code, name, unit) and grocery packages composed of multiple products with **weekly package pricing**.
+- **Order Processing**:
+  - Supports package and product line items with price snapshots at transaction time.
+  - Optional discount and shipping fee calculation.
+  - Flexible due-date configuration: default **46 weeks** (configurable in Settings) or pick a specific target date with automatic week calculation.
+  - Automatic sequential order numbering (`ORD-YYYY-XXXX`) and weekly installment target calculation.
+- **Installment Payments (*Setoran*)**:
+  - Validates payment amounts against the remaining balance.
+  - Automatically marks orders as **Lunas** (Paid Off) once the remaining balance reaches zero.
+  - Concurrency-safe numbering (`STR-YYYY-XXXX`) via `LockService` and duplicate-submission protection via idempotency keys (`CacheService`).
+- **Goods Handover (*Penyerahan*)**: Track ready-to-deliver paid orders, flag unpaid orders nearing due dates for admin review, and record delivery date, recipient, and notes.
+- **Reports & Procurement Summary (*Rekapan*)**:
+  - Filterable by date range, customer, order status, and period grouping (daily/weekly/monthly).
+  - **Procurement Needs Breakdown**: Automatically unpacks ordered packages into total product quantities for supplier purchasing.
+  - Export reports to **CSV**, a new **Google Sheets** file, or **Print/PDF**.
+- **Access Control & Automated Backups**: Email-based role permissions (`Admin` and `Staff`) and one-click or daily scheduled Google Drive spreadsheet backups.
 
-## Cara Deploy
+## Tech Stack
 
-### Opsi A: Langsung dari Google Sheets (Container-bound, Paling Mudah)
-1. Buat Google Sheets baru di Google Drive Anda.
-2. Buka menu **Ekstensi (Extensions) → Apps Script**.
-3. Salin isi seluruh berkas `.gs` dan `.html` di folder ini ke proyek Apps Script (samakan nama berkasnya, tanpa ekstensi di editor GAS).
-4. Aktifkan tampilan `appsscript.json` di *Project Settings* lalu salin isi `appsscript.json`.
-5. Jalankan fungsi `initDatabase` sekali dari editor untuk membuat seluruh sheet dan header otomatis.
-6. Klik **Deploy → New deployment → Web app**:
-   - *Execute as*: **Me (User deploying)**
-   - *Who has access*: **Anyone** (atau **Anyone with Google account** agar email pengguna terbaca untuk otorisasi di `Pengaturan`).
+- **Backend**: Google Apps Script (V8 Runtime), `SpreadsheetApp`, `LockService`, `CacheService`, `DriveApp`, `PropertiesService`
+- **Database**: Google Sheets (batch read/write with audit columns: `dibuat_oleh`, `dibuat_pada`, `diubah_pada`)
+- **Frontend**: `HtmlService` (responsive vanilla HTML/CSS/JS SPA)
 
-### Opsi B: Menggunakan `clasp` (Standalone / Bound)
-1. Login: `clasp login`
-2. Buat proyek baru: `clasp create --title "Sistem Pengadaan Sembako" --type webapp` (atau `--type sheets` jika ingin terikat ke Google Sheets).
-3. Unggah kode: `clasp push`
+## Deployment Guide
+
+### Option A: Container-Bound (Google Sheets)
+1. Create a new Google Sheets spreadsheet in your Google Drive.
+2. Open **Extensions → Apps Script**.
+3. Copy the `.gs`, `.html`, and `appsscript.json` files into the Apps Script editor.
+4. Run the `initDatabase` function once from `Config.gs` to generate all required sheets and headers.
+5. Click **Deploy → New deployment → Web app**:
+   - **Execute as**: `Me`
+   - **Who has access**: `Anyone` (or `Anyone with Google account` for Google Workspace/single-account environments)
+
+### Option B: Using `clasp`
+1. Authenticate: `clasp login`
+2. Create a project: `clasp create --title "Sistem Pengadaan Sembako" --type webapp`
+3. Push source files: `clasp push`
 4. Deploy: `clasp deploy`
 
-> **Catatan Mode Standalone**: Saat pertama kali dibuka, `initDatabase()` akan otomatis membuat file Google Sheets baru di Drive Anda dan menyimpan ID-nya di *Script Properties* (`SPREADSHEET_ID`). Jika ingin menghubungkan ke Spreadsheet yang sudah ada, jalankan `setSpreadsheetId('ID_SPREADSHEET_ANDA')` di editor GAS.
+> **Standalone Mode Note**: On first launch, `initDatabase()` automatically creates a new Google Sheets database in your Drive and stores its ID in Script Properties (`SPREADSHEET_ID`). To link an existing spreadsheet, run `setSpreadsheetId('YOUR_SPREADSHEET_ID')` from the Apps Script editor.

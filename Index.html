@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <title><?= appName ?></title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <h1 id="brandTitle"><?= appName ?></h1>
+        <small>Google Apps Script + Sheets</small>
+      </div>
+      <nav class="nav" id="navMenu">
+        <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+        <button class="nav-btn" data-page="customers">Customer</button>
+        <button class="nav-btn" data-page="catalog">Produk &amp; Paket</button>
+        <button class="nav-btn" data-page="orders">Order</button>
+        <button class="nav-btn" data-page="setoran">Setoran</button>
+        <button class="nav-btn" data-page="penyerahan">Penyerahan</button>
+        <button class="nav-btn" data-page="rekapan">Rekapan</button>
+        <button class="nav-btn admin-only hidden" data-page="pengaturan">Pengaturan</button>
+      </nav>
+      <div class="user-box" id="userBox">Memuat pengguna...</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="menu-toggle" id="menuToggle" type="button">&#9776;</button>
+          <h2 class="page-title" id="pageTitle">Dashboard</h2>
+        </div>
+        <div class="toolbar-group no-print">
+          <button class="btn btn-secondary btn-sm" id="btnRefresh" type="button">Muat Ulang</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- 1. DASHBOARD -->
+        <section id="page-dashboard" class="page">
+          <div class="toolbar no-print">
+            <div class="toolbar-group">
+              <button class="btn btn-primary" onclick="openOrderModal()">+ Tambah Order</button>
+              <button class="btn btn-primary" onclick="openSetoranModal()">+ Tambah Setoran</button>
+              <button class="btn btn-secondary" onclick="openCustomerModal()">+ Tambah Customer</button>
+            </div>
+          </div>
+
+          <div class="grid-4 mb-12" id="dashCards"></div>
+
+          <div class="grid-2 mb-12">
+            <div class="card">
+              <h3 class="card-title">Setoran Masuk Periode Ini</h3>
+              <div class="grid-2" id="dashPeriodCards"></div>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Top Customer Sisa Setoran Terbesar</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Customer</th><th class="text-right">Total</th><th class="text-right">Sisa Setoran</th></tr>
+                  </thead>
+                  <tbody id="tblTopSisa"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3 class="card-title">Customer Tertinggal dari Jadwal</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Order / Customer</th><th class="text-right">Ideal</th><th class="text-right">Disetor</th><th class="text-right">Kekurangan</th></tr>
+                  </thead>
+                  <tbody id="tblTertinggal"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Order Mendekati Jatuh Tempo</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>No. Order / Customer</th><th>Jatuh Tempo</th><th class="text-right">Sisa</th></tr>
+                  </thead>
+                  <tbody id="tblJatuhTempo"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. CUSTOMER -->
+        <section id="page-customers" class="page hidden">
+          <div class="toolbar">
+            <div class="toolbar-group" style="flex:1; max-width:420px;">
+              <input type="text" id="searchCustomer" placeholder="Cari nama atau no. HP customer..." />
+              <label style="display:flex;align-items:center;gap:6px;margin:0;white-space:nowrap;">
+                <input type="checkbox" id="chkInactiveCustomer" style="width:auto;" /> Tampilkan nonaktif
+              </label>
+            </div>
+            <button class="btn btn-primary" onclick="openCustomerModal()">+ Tambah Customer</button>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Nama</th><th>No. HP</th><th>Alamat</th><th>Status</th><th class="text-right">Aksi</th></tr>
+                </thead>
+                <tbody id="tblCustomers"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. PRODUK & PAKET -->
+        <section id="page-catalog" class="page hidden">
+          <div class="tabs">
+            <button class="tab-btn active" data-catalog-tab="produk">Produk</button>
+            <button class="tab-btn" data-catalog-tab="paket">Paket Sembako</button>
+          </div>
+
+          <div id="catalog-produk">
+            <div class="toolbar">
+              <input type="text" id="searchProduct" placeholder="Cari produk..." style="max-width:300px;" />
+              <button class="btn btn-primary admin-only hidden" onclick="openProductModal()">+ Tambah Produk</button>
+            </div>
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Kode</th><th>Nama Produk</th><th>Satuan</th><th>Status</th><th class="text-right">Aksi</th></tr>
+                  </thead>
+                  <tbody id="tblProducts"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div id="catalog-paket" class="hidden">
+            <div class="toolbar">
+              <input type="text" id="searchPackage" placeholder="Cari paket..." style="max-width:300px;" />
+              <button class="btn btn-primary admin-only hidden" onclick="openPackageModal()">+ Tambah Paket</button>
+            </div>
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Nama Paket</th><th>Isi Produk</th><th class="text-right">Harga / Minggu</th><th>Status</th><th class="text-right">Aksi</th></tr>
+                  </thead>
+                  <tbody id="tblPackages"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. ORDER -->
+        <section id="page-orders" class="page hidden">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <select id="filterOrderStatus" style="width:auto;">
+                <option value="ALL">Semua Status</option>
+                <option value="Berjalan">Berjalan</option>
+                <option value="Lunas">Lunas</option>
+                <option value="Sudah Diserahkan">Sudah Diserahkan</option>
+                <option value="Dibatalkan">Dibatalkan</option>
+              </select>
+              <input type="text" id="searchOrder" placeholder="Cari no. order / customer..." style="width:240px;" />
+            </div>
+            <button class="btn btn-primary" onclick="openOrderModal()">+ Buat Order</button>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>No. Order</th>
+                    <th>Tanggal</th>
+                    <th>Customer</th>
+                    <th class="text-right">Total</th>
+                    <th class="text-right">Target/Mgg</th>
+                    <th class="text-right">Sisa</th>
+                    <th>Progres</th>
+                    <th>Status / Penanda</th>
+                    <th class="text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="tblOrders"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. SETORAN -->
+        <section id="page-setoran" class="page hidden">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <input type="text" id="searchSetoran" placeholder="Cari no. setoran / customer / order..." style="width:260px;" />
+            </div>
+            <button class="btn btn-primary" onclick="openSetoranModal()">+ Catat Setoran</button>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>No. Setoran</th><th>Tanggal</th><th>Customer</th><th>No. Order</th><th>Metode</th><th class="text-right">Nominal</th><th>Catatan</th></tr>
+                </thead>
+                <tbody id="tblSetoran"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. PENYERAHAN -->
+        <section id="page-penyerahan" class="page hidden">
+          <div class="card mb-12">
+            <h3 class="card-title">Order Lunas Siap Diserahkan</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>No. Order</th><th>Customer</th><th class="text-right">Total</th><th>Jatuh Tempo</th><th class="text-right">Aksi</th></tr>
+                </thead>
+                <tbody id="tblSiapSerah"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card mb-12">
+            <h3 class="card-title">Order Belum Lunas (Perlu Tindak Lanjut)</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>No. Order</th><th>Customer</th><th>Jatuh Tempo</th><th class="text-right">Sisa Setoran</th><th>Penanda</th><th class="text-right">Aksi</th></tr>
+                </thead>
+                <tbody id="tblBelumLunasSerah"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">Riwayat Sudah Diserahkan</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>No. Order</th><th>Customer</th><th>Tgl Serah</th><th>Penerima</th><th>Catatan</th></tr>
+                </thead>
+                <tbody id="tblSudahSerah"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 7. REKAPAN -->
+        <section id="page-rekapan" class="page hidden">
+          <div class="card mb-12 no-print">
+            <div class="grid-4">
+              <div>
+                <label>Dari Tanggal</label>
+                <input type="date" id="rekDari" />
+              </div>
+              <div>
+                <label>Sampai Tanggal</label>
+                <input type="date" id="rekSampai" />
+              </div>
+              <div>
+                <label>Customer</label>
+                <select id="rekCustomer"><option value="">Semua Customer</option></select>
+              </div>
+              <div>
+                <label>Status Order</label>
+                <select id="rekStatus">
+                  <option value="ALL">Semua Aktif (Non-Batal)</option>
+                  <option value="Berjalan">Berjalan</option>
+                  <option value="Lunas">Lunas</option>
+                  <option value="Sudah Diserahkan">Sudah Diserahkan</option>
+                </select>
+              </div>
+            </div>
+            <div class="toolbar mt-12" style="margin-bottom:0;">
+              <div class="toolbar-group">
+                <select id="rekPeriode" style="width:auto;">
+                  <option value="bulanan">Periode: Bulanan</option>
+                  <option value="mingguan">Periode: Mingguan</option>
+                  <option value="harian">Periode: Harian</option>
+                </select>
+                <button class="btn btn-primary" onclick="loadRekapan()">Terapkan Filter</button>
+              </div>
+              <div class="toolbar-group">
+                <button class="btn btn-secondary btn-sm" onclick="downloadRekapanCsv()">Unduh CSV</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportRekapanSheet()">Ekspor ke Google Sheets</button>
+                <button class="btn btn-secondary btn-sm" onclick="window.print()">Cetak / PDF</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tabs no-print">
+            <button class="tab-btn active" data-rek-tab="kebutuhan">Kebutuhan Barang (Belanja)</button>
+            <button class="tab-btn" data-rek-tab="customer">Per Customer</button>
+            <button class="tab-btn" data-rek-tab="periode">Setoran Per Periode</button>
+            <button class="tab-btn" data-rek-tab="item">Per Produk &amp; Paket</button>
+          </div>
+
+          <div class="card">
+            <div id="rek-tab-kebutuhan" class="table-wrap">
+              <table>
+                <thead><tr><th>Kode</th><th>Nama Produk</th><th>Satuan</th><th class="text-right">Total Kebutuhan</th></tr></thead>
+                <tbody id="tblRekKebutuhan"></tbody>
+              </table>
+            </div>
+            <div id="rek-tab-customer" class="table-wrap hidden">
+              <table>
+                <thead><tr><th>Customer</th><th class="text-right">Order</th><th class="text-right">Total Pesanan</th><th class="text-right">Total Setoran</th><th class="text-right">Sisa Setoran</th><th class="text-right">Progres</th></tr></thead>
+                <tbody id="tblRekCustomer"></tbody>
+              </table>
+            </div>
+            <div id="rek-tab-periode" class="table-wrap hidden">
+              <table>
+                <thead><tr><th>Periode</th><th class="text-right">Jumlah Transaksi</th><th class="text-right">Total Setoran</th></tr></thead>
+                <tbody id="tblRekPeriode"></tbody>
+              </table>
+            </div>
+            <div id="rek-tab-item" class="table-wrap hidden">
+              <table>
+                <thead><tr><th>Tipe</th><th>Nama Item</th><th class="text-right">Total Qty</th><th class="text-right">Total Nilai</th></tr></thead>
+                <tbody id="tblRekItem"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 8. PENGATURAN -->
+        <section id="page-pengaturan" class="page hidden">
+          <div class="card mb-12">
+            <h3 class="card-title">Pengaturan Sistem</h3>
+            <div id="settingsForm"></div>
+            <div class="mt-12">
+              <button class="btn btn-primary" onclick="saveSettingsForm()">Simpan Pengaturan</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Cadangan Database (Google Drive)</h3>
+            <p style="margin-top:0;color:var(--muted);">Cadangkan file Google Sheets database ke Google Drive atau aktifkan jadwal cadangan harian otomatis pukul 02.00 WIB.</p>
+            <div class="toolbar-group">
+              <button class="btn btn-secondary" onclick="runBackupNow()">Cadangkan Sekarang</button>
+              <button class="btn btn-primary" onclick="enableDailyBackup()">Aktifkan Backup Harian Otomatis</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- MODAL -->
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalTitle">Judul</h3>
+        <button class="btn btn-secondary btn-sm" onclick="closeModal()">Tutup</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <?!= include('Scripts'); ?>
+</body>
+</html>

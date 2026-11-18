@@ -1,0 +1,1119 @@
+<script>
+  const state = {
+    user: null,
+    defaultMinggu: 46,
+    currentPage: 'dashboard',
+    customers: [],
+    products: [],
+    packages: [],
+    orders: [],
+    setoran: [],
+    rekapanTab: 'kebutuhan'
+  };
+
+  function runGas(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler((res) => {
+          if (res && res.ok) resolve(res.data);
+          else reject(new Error((res && res.error) || 'Terjadi kesalahan pada server.'));
+        })
+        .withFailureHandler((err) => reject(new Error(err && err.message ? err.message : String(err))))
+        [fnName](...args);
+    });
+  }
+
+  function newRequestId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'REQ-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  async function withButtonLoading(btnOrId, loadingText, asyncFn) {
+    const btn = typeof btnOrId === 'string' ? document.getElementById(btnOrId) : btnOrId;
+    if (!btn) return asyncFn();
+    if (btn.disabled || btn.dataset.busy === '1') return;
+    const origText = btn.textContent;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.textContent = loadingText || 'Menyimpan...';
+    try {
+      return await asyncFn();
+    } finally {
+      btn.dataset.busy = '0';
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+
+  function fmtRp(n) {
+    return 'Rp ' + Math.round(Number(n || 0)).toLocaleString('id-ID');
+  }
+
+  function esc(str) {
+    return String(str === null || str === undefined ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function todayIso() {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + m + '-' + day;
+  }
+
+  function showToast(msg, type) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast show ' + (type || '');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => {
+      el.className = 'toast';
+    }, 3500);
+  }
+
+  function openModal(title, bodyHtml, footerHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modalFooter').innerHTML = footerHtml || '';
+    document.getElementById('modalBackdrop').classList.add('open');
+  }
+
+  function closeModal() {
+    document.getElementById('modalBackdrop').classList.remove('open');
+  }
+
+  function badgeStatus(status) {
+    if (status === 'Lunas' || status === 'Sesuai jadwal') return '<span class="badge badge-success">' + esc(status) + '</span>';
+    if (status === 'Sudah Diserahkan') return '<span class="badge badge-info">' + esc(status) + '</span>';
+    if (status === 'Tertinggal') return '<span class="badge badge-warning">' + esc(status) + '</span>';
+    if (status === 'Melewati jatuh tempo' || status === 'Dibatalkan') return '<span class="badge badge-danger">' + esc(status) + '</span>';
+    return '<span class="badge badge-muted">' + esc(status) + '</span>';
+  }
+
+  // Navigasi
+  const PAGE_TITLES = {
+    dashboard: 'Dashboard',
+    customers: 'Master Customer',
+    catalog: 'Produk & Paket',
+    orders: 'Daftar Order',
+    setoran: 'Pencatatan Setoran',
+    penyerahan: 'Penyerahan Barang',
+    rekapan: 'Rekapan & Kebutuhan Barang',
+    pengaturan: 'Pengaturan Sistem'
+  };
+
+  function switchPage(page) {
+    state.currentPage = page;
+    document.querySelectorAll('.page').forEach((p) => p.classList.add('hidden'));
+    document.getElementById('page-' + page).classList.remove('hidden');
+    document.querySelectorAll('.nav-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.page === page);
+    });
+    document.getElementById('pageTitle').textContent = PAGE_TITLES[page] || page;
+    document.getElementById('sidebar').classList.remove('open');
+    loadCurrentPage();
+  }
+
+  async function loadCurrentPage() {
+    try {
+      if (state.currentPage === 'dashboard') await loadDashboard();
+      else if (state.currentPage === 'customers') await loadCustomers();
+      else if (state.currentPage === 'catalog') await loadCatalog();
+      else if (state.currentPage === 'orders') await loadOrders();
+      else if (state.currentPage === 'setoran') await loadSetoran();
+      else if (state.currentPage === 'penyerahan') await loadPenyerahan();
+      else if (state.currentPage === 'rekapan') await loadRekapan();
+      else if (state.currentPage === 'pengaturan') await loadSettings();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // Bootstrap awal
+  async function bootstrap() {
+    try {
+      const data = await runGas('apiBootstrap');
+      state.user = data.user;
+      state.defaultMinggu = data.defaultMinggu || 46;
+      state.customers = data.customers || [];
+      state.products = data.products || [];
+      state.packages = data.packages || [];
+
+      document.getElementById('brandTitle').textContent = data.appName || 'Sistem Sembako';
+      document.getElementById('userBox').textContent = data.user.email + ' (' + data.user.role.toUpperCase() + ')';
+
+      if (data.user.role === 'admin') {
+        document.querySelectorAll('.admin-only').forEach((el) => el.classList.remove('hidden'));
+      }
+
+      populateRekapanCustomerSelect();
+      renderDashboard(data.dashboard);
+    } catch (err) {
+      document.getElementById('userBox').textContent = 'Akses ditolak';
+      showToast(err.message, 'error');
+    }
+  }
+
+  // 1. DASHBOARD
+  async function loadDashboard() {
+    const data = await runGas('apiGetDashboard');
+    renderDashboard(data);
+  }
+
+  function renderDashboard(data) {
+    const r = data.ringkasan;
+    document.getElementById('dashCards').innerHTML = `
+      <div class="card">
+        <div class="stat-label">Pesanan Berjalan</div>
+        <div class="stat-value">${fmtRp(r.total_pesanan_berjalan)}</div>
+        <div class="stat-sub">${r.jumlah_order_berjalan} order aktif</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Total Setoran Masuk</div>
+        <div class="stat-value" style="color:var(--success)">${fmtRp(r.total_setoran_masuk)}</div>
+        <div class="stat-sub">Seluruh order aktif</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Total Sisa Setoran</div>
+        <div class="stat-value" style="color:var(--warning)">${fmtRp(r.total_sisa_setoran)}</div>
+        <div class="stat-sub">Belum terbayar</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Customer Lunas</div>
+        <div class="stat-value">${r.jumlah_customer_lunas}</div>
+        <div class="stat-sub">Siap / sudah diserahkan</div>
+      </div>
+    `;
+
+    document.getElementById('dashPeriodCards').innerHTML = `
+      <div class="card" style="box-shadow:none;background:#f8fafc;">
+        <div class="stat-label">Minggu Ini</div>
+        <div class="stat-value" style="font-size:18px;">${fmtRp(r.setoran_minggu_ini)}</div>
+      </div>
+      <div class="card" style="box-shadow:none;background:#f8fafc;">
+        <div class="stat-label">Bulan Ini</div>
+        <div class="stat-value" style="font-size:18px;">${fmtRp(r.setoran_bulan_ini)}</div>
+      </div>
+    `;
+
+    document.getElementById('tblTopSisa').innerHTML = data.top_sisa_setoran.length
+      ? data.top_sisa_setoran.map((c) => `
+        <tr>
+          <td><a href="#" onclick="openCustomerDetail('${c.customer_id}');return false;">${esc(c.customer_nama)}</a></td>
+          <td class="text-right">${fmtRp(c.total_pesanan)}</td>
+          <td class="text-right"><strong>${fmtRp(c.sisa_setoran)}</strong></td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Belum ada data.</td></tr>';
+
+    document.getElementById('tblTertinggal').innerHTML = data.daftar_tertinggal.length
+      ? data.daftar_tertinggal.map((o) => `
+        <tr>
+          <td><strong>${esc(o.no_order)}</strong><br><small>${esc(o.customer_nama)}</small></td>
+          <td class="text-right">${fmtRp(o.setoran_ideal)}</td>
+          <td class="text-right">${fmtRp(o.total_setoran)}</td>
+          <td class="text-right" style="color:var(--danger);font-weight:700;">-${fmtRp(o.kekurangan_jadwal)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4" style="text-align:center;color:var(--muted);">Semua customer sesuai jadwal.</td></tr>';
+
+    document.getElementById('tblJatuhTempo').innerHTML = data.mendekati_jatuh_tempo.length
+      ? data.mendekati_jatuh_tempo.map((o) => `
+        <tr>
+          <td><strong>${esc(o.no_order)}</strong><br><small>${esc(o.customer_nama)}</small></td>
+          <td>${esc(o.tgl_jatuh_tempo)}<br><small>${o.hari_menuju_jatuh_tempo < 0 ? 'Lewat ' + Math.abs(o.hari_menuju_jatuh_tempo) + ' hari' : o.hari_menuju_jatuh_tempo + ' hari lagi'}</small></td>
+          <td class="text-right">${fmtRp(o.sisa_setoran)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Tidak ada order mendekati jatuh tempo.</td></tr>';
+  }
+
+  // 2. CUSTOMER
+  async function loadCustomers() {
+    const includeInactive = document.getElementById('chkInactiveCustomer').checked;
+    const rows = await runGas('apiGetCustomers', includeInactive);
+    if (!includeInactive) state.customers = rows;
+    renderCustomers(rows);
+  }
+
+  function renderCustomers(list) {
+    const q = document.getElementById('searchCustomer').value.trim().toLowerCase();
+    const filtered = list.filter((c) => !q || c.nama.toLowerCase().includes(q) || c.no_hp.toLowerCase().includes(q));
+    const isAdmin = state.user && state.user.role === 'admin';
+
+    document.getElementById('tblCustomers').innerHTML = filtered.length
+      ? filtered.map((c) => `
+        <tr>
+          <td><a href="#" onclick="openCustomerDetail('${c.id}');return false;"><strong>${esc(c.nama)}</strong></a></td>
+          <td>${esc(c.no_hp || '-')}</td>
+          <td>${esc(c.alamat || '-')}</td>
+          <td>${c.aktif ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-muted">Nonaktif</span>'}</td>
+          <td class="text-right">
+            <button class="btn btn-secondary btn-sm" onclick="openCustomerDetail('${c.id}')">Detail</button>
+            <button class="btn btn-secondary btn-sm" onclick="editCustomer('${c.id}')">Ubah</button>
+            ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="toggleCustomer('${c.id}', ${!c.aktif})">${c.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>` : ''}
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Tidak ada customer.</td></tr>';
+  }
+
+  function openCustomerModal(existing, onSavedCallback) {
+    const c = existing || {};
+    openModal(
+      c.id ? 'Ubah Customer' : 'Tambah Customer',
+      `
+        <div class="form-group"><label>Nama Customer *</label><input id="fCustNama" value="${esc(c.nama || '')}" /></div>
+        <div class="form-group"><label>No. HP / WhatsApp</label><input id="fCustHp" value="${esc(c.no_hp || '')}" /></div>
+        <div class="form-group"><label>Alamat</label><textarea id="fCustAlamat" rows="2">${esc(c.alamat || '')}</textarea></div>
+        <div class="form-group"><label>Catatan</label><input id="fCustCatatan" value="${esc(c.catatan || '')}" /></div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSaveCust">Simpan</button>
+      `
+    );
+
+    const reqId = newRequestId();
+    document.getElementById('btnSaveCust').onclick = () => withButtonLoading('btnSaveCust', 'Menyimpan...', async () => {
+      try {
+        const saved = await runGas('apiSaveCustomer', {
+          request_id: reqId,
+          id: c.id || '',
+          nama: document.getElementById('fCustNama').value,
+          no_hp: document.getElementById('fCustHp').value,
+          alamat: document.getElementById('fCustAlamat').value,
+          catatan: document.getElementById('fCustCatatan').value
+        });
+        showToast('Customer berhasil disimpan.', 'success');
+        closeModal();
+        const idx = state.customers.findIndex((x) => x.id === saved.id);
+        if (idx >= 0) state.customers[idx] = saved;
+        else state.customers.push(saved);
+        state.customers.sort((a, b) => a.nama.localeCompare(b.nama, 'id'));
+        populateRekapanCustomerSelect();
+        if (onSavedCallback) onSavedCallback(saved);
+        else if (state.currentPage === 'customers') loadCustomers();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  async function editCustomer(id) {
+    const list = await runGas('apiGetCustomers', true);
+    const found = list.find((c) => c.id === id);
+    if (found) openCustomerModal(found);
+  }
+
+  async function toggleCustomer(id, aktif) {
+    try {
+      await runGas('apiToggleCustomerStatus', id, aktif);
+      showToast('Status customer diperbarui.', 'success');
+      loadCustomers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function openCustomerDetail(id) {
+    try {
+      const d = await runGas('apiGetCustomerDetail', id);
+      const r = d.ringkasan;
+      openModal(
+        'Detail Customer: ' + d.customer.nama,
+        `
+          <div class="grid-3 mb-12">
+            <div class="card" style="box-shadow:none;background:#f8fafc;">
+              <div class="stat-label">Total Pesanan</div>
+              <div class="stat-value" style="font-size:16px;">${fmtRp(r.total_pesanan)}</div>
+            </div>
+            <div class="card" style="box-shadow:none;background:#f8fafc;">
+              <div class="stat-label">Total Setoran</div>
+              <div class="stat-value" style="font-size:16px;color:var(--success);">${fmtRp(r.total_setoran)}</div>
+            </div>
+            <div class="card" style="box-shadow:none;background:#f8fafc;">
+              <div class="stat-label">Sisa Setoran (${r.progres_persen}%)</div>
+              <div class="stat-value" style="font-size:16px;color:var(--warning);">${fmtRp(r.sisa_setoran)}</div>
+            </div>
+          </div>
+          <h4>Daftar Order</h4>
+          <div class="table-wrap mb-12">
+            <table>
+              <thead><tr><th>No. Order</th><th class="text-right">Total</th><th class="text-right">Sisa</th><th>Status</th></tr></thead>
+              <tbody>
+                ${d.orders.length ? d.orders.map((o) => `<tr><td>${esc(o.no_order)}</td><td class="text-right">${fmtRp(o.total)}</td><td class="text-right">${fmtRp(o.sisa_setoran)}</td><td>${badgeStatus(o.status)}</td></tr>`).join('') : '<tr><td colspan="4">Belum ada order.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+          <h4>Riwayat Setoran</h4>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>No. Setoran</th><th>Tanggal</th><th class="text-right">Nominal</th><th class="text-right">Kumulatif</th></tr></thead>
+              <tbody>
+                ${d.setoran.length ? d.setoran.map((s) => `<tr><td>${esc(s.no_setoran)}</td><td>${esc(s.tanggal)}</td><td class="text-right">${fmtRp(s.nominal)}</td><td class="text-right">${fmtRp(s.kumulatif)}</td></tr>`).join('') : '<tr><td colspan="4">Belum ada setoran.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        `,
+        '<button class="btn btn-secondary" onclick="closeModal()">Tutup</button>'
+      );
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // 3. PRODUK & PAKET
+  async function loadCatalog() {
+    const [prods, pkgs] = await Promise.all([runGas('apiGetProducts', true), runGas('apiGetPackages', true)]);
+    state.products = prods.filter((p) => p.aktif);
+    state.packages = pkgs.filter((pk) => pk.aktif);
+    renderProducts(prods);
+    renderPackages(pkgs);
+  }
+
+  function renderProducts(list) {
+    const q = document.getElementById('searchProduct').value.trim().toLowerCase();
+    const isAdmin = state.user && state.user.role === 'admin';
+    const filtered = list.filter((p) => !q || p.nama.toLowerCase().includes(q) || p.kode.toLowerCase().includes(q));
+    document.getElementById('tblProducts').innerHTML = filtered.length
+      ? filtered.map((p) => `
+        <tr>
+          <td>${esc(p.kode)}</td>
+          <td><strong>${esc(p.nama)}</strong></td>
+          <td>${esc(p.satuan)}</td>
+          <td>${p.aktif ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-muted">Nonaktif</span>'}</td>
+          <td class="text-right">
+            ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick='openProductModal(${JSON.stringify(p)})'>Ubah</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleProduct('${p.id}', ${!p.aktif})">${p.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>` : '-'}
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada produk.</td></tr>';
+  }
+
+  function openProductModal(p) {
+    const item = p || {};
+    openModal(
+      item.id ? 'Ubah Produk' : 'Tambah Produk',
+      `
+        <div class="grid-2">
+          <div class="form-group"><label>Kode Produk</label><input id="fProdKode" value="${esc(item.kode || '')}" placeholder="Otomatis jika kosong" /></div>
+          <div class="form-group"><label>Satuan *</label><input id="fProdSatuan" value="${esc(item.satuan || 'kg')}" placeholder="kg, liter, pcs" /></div>
+        </div>
+        <div class="form-group"><label>Nama Produk *</label><input id="fProdNama" value="${esc(item.nama || '')}" /></div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSaveProd">Simpan</button>
+      `
+    );
+    const prodReqId = newRequestId();
+    document.getElementById('btnSaveProd').onclick = () => withButtonLoading('btnSaveProd', 'Menyimpan...', async () => {
+      try {
+        await runGas('apiSaveProduct', {
+          request_id: prodReqId,
+          id: item.id || '',
+          kode: document.getElementById('fProdKode').value,
+          nama: document.getElementById('fProdNama').value,
+          satuan: document.getElementById('fProdSatuan').value
+        });
+        showToast('Produk disimpan.', 'success');
+        closeModal();
+        loadCatalog();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  async function toggleProduct(id, aktif) {
+    try {
+      await runGas('apiToggleProductStatus', id, aktif);
+      showToast('Status produk diperbarui.', 'success');
+      loadCatalog();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  function renderPackages(list) {
+    const q = document.getElementById('searchPackage').value.trim().toLowerCase();
+    const isAdmin = state.user && state.user.role === 'admin';
+    const filtered = list.filter((pk) => !q || pk.nama.toLowerCase().includes(q));
+    document.getElementById('tblPackages').innerHTML = filtered.length
+      ? filtered.map((pk) => `
+        <tr>
+          <td><strong>${esc(pk.nama)}</strong></td>
+          <td>${pk.items.map((it) => `${esc(it.produk_nama)} (${it.qty} ${esc(it.satuan)})`).join(', ')}</td>
+          <td class="text-right">${fmtRp(pk.harga_per_minggu)} / mgg</td>
+          <td>${pk.aktif ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-muted">Nonaktif</span>'}</td>
+          <td class="text-right">
+            ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick='openPackageModal(${JSON.stringify(pk)})'>Ubah</button>
+            <button class="btn btn-secondary btn-sm" onclick="togglePackage('${pk.id}', ${!pk.aktif})">${pk.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>` : '-'}
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada paket.</td></tr>';
+  }
+
+  function openPackageModal(pk) {
+    const item = pk || { items: [] };
+    openModal(
+      item.id ? 'Ubah Paket' : 'Tambah Paket',
+      `
+        <div class="form-group"><label>Nama Paket *</label><input id="fPkgNama" value="${esc(item.nama || '')}" /></div>
+        <div class="form-group">
+          <label>Isi Paket</label>
+          <div id="pkgItemsWrap"></div>
+          <button type="button" class="btn btn-secondary btn-sm mt-12" onclick="addPkgItemRow()">+ Tambah Produk Isi</button>
+        </div>
+        <div class="form-group">
+          <label>Harga Paket per Minggu (Rp) *</label>
+          <input id="fPkgHargaMinggu" type="number" min="0" value="${item.harga_per_minggu || 0}" />
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSavePkg">Simpan Paket</button>
+      `
+    );
+
+    const wrap = document.getElementById('pkgItemsWrap');
+    window.addPkgItemRow = (prefill) => {
+      const row = document.createElement('div');
+      row.className = 'grid-3 mb-12 pkg-row';
+      row.style.alignItems = 'center';
+      const opts = state.products.map((p) => `<option value="${p.id}" ${prefill && prefill.produk_id === p.id ? 'selected' : ''}>${esc(p.nama)} (${esc(p.satuan)})</option>`).join('');
+      row.innerHTML = `
+        <select class="pkg-prod">${opts}</select>
+        <input type="number" class="pkg-qty" min="0.1" step="any" value="${prefill ? prefill.qty : 1}" placeholder="Qty" />
+        <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">Hapus</button>
+      `;
+      wrap.appendChild(row);
+    };
+
+    if (item.items && item.items.length) item.items.forEach((it) => addPkgItemRow(it));
+    else addPkgItemRow();
+
+    const pkgReqId = newRequestId();
+    document.getElementById('btnSavePkg').onclick = () => withButtonLoading('btnSavePkg', 'Menyimpan...', async () => {
+      try {
+        const items = [];
+        document.querySelectorAll('.pkg-row').forEach((r) => {
+          items.push({
+            produk_id: r.querySelector('.pkg-prod').value,
+            qty: Number(r.querySelector('.pkg-qty').value || 0)
+          });
+        });
+        await runGas('apiSavePackage', {
+          request_id: pkgReqId,
+          id: item.id || '',
+          nama: document.getElementById('fPkgNama').value,
+          harga_per_minggu: document.getElementById('fPkgHargaMinggu').value,
+          items: items
+        });
+        showToast('Paket disimpan.', 'success');
+        closeModal();
+        loadCatalog();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  async function togglePackage(id, aktif) {
+    try {
+      await runGas('apiTogglePackageStatus', id, aktif);
+      showToast('Status paket diperbarui.', 'success');
+      loadCatalog();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // 4. ORDER
+  async function loadOrders() {
+    const status = document.getElementById('filterOrderStatus').value;
+    state.orders = await runGas('apiGetOrders', { status: status });
+    renderOrders();
+  }
+
+  function renderOrders() {
+    const q = document.getElementById('searchOrder').value.trim().toLowerCase();
+    const list = state.orders.filter((o) => !q || o.no_order.toLowerCase().includes(q) || o.customer_nama.toLowerCase().includes(q));
+    document.getElementById('tblOrders').innerHTML = list.length
+      ? list.map((o) => `
+        <tr>
+          <td><strong>${esc(o.no_order)}</strong></td>
+          <td>${esc(o.tanggal)}</td>
+          <td>${esc(o.customer_nama)}</td>
+          <td class="text-right">${fmtRp(o.total)}</td>
+          <td class="text-right">${fmtRp(o.target_per_minggu)}</td>
+          <td class="text-right"><strong>${fmtRp(o.sisa_setoran)}</strong></td>
+          <td style="min-width:110px;">
+            <div class="progress-bar"><div class="progress-fill" style="width:${o.progres_persen}%"></div></div>
+            <small>${o.progres_persen}%</small>
+          </td>
+          <td>${badgeStatus(o.status)} ${o.status === 'Berjalan' ? badgeStatus(o.penanda) : ''}</td>
+          <td class="text-right">
+            <button class="btn btn-secondary btn-sm" onclick="openOrderDetail('${o.id}')">Detail</button>
+            ${o.status === 'Berjalan' ? `<button class="btn btn-primary btn-sm" onclick="openSetoranModal('${o.customer_id}', '${o.id}')">Setor</button>` : ''}
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="9" style="text-align:center;color:var(--muted);">Belum ada order.</td></tr>';
+  }
+
+  function openOrderModal() {
+    openModal(
+      'Buat Order Baru',
+      `
+        <div class="grid-2">
+          <div class="form-group">
+            <label>Cari &amp; Pilih Customer *</label>
+            <input type="text" id="ordCustSearch" placeholder="Ketik untuk saring customer..." class="mb-12" />
+            <div style="display:flex;gap:6px;">
+              <select id="ordCustId"></select>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnQuickAddCust" style="white-space:nowrap;">+ Baru</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Tanggal Order *</label>
+            <input type="date" id="ordTanggal" value="${todayIso()}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Item Pesanan (Produk / Paket)</label>
+          <div id="ordItemsWrap"></div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addOrdItemRow()">+ Tambah Item</button>
+        </div>
+        <div class="grid-3">
+          <div class="form-group"><label>Diskon (Rp)</label><input type="number" id="ordDiskon" min="0" value="0" /></div>
+          <div class="form-group"><label>Ongkir (Rp)</label><input type="number" id="ordOngkir" min="0" value="0" /></div>
+          <div class="form-group">
+            <label>Mode Jatuh Tempo</label>
+            <select id="ordDueMode">
+              <option value="minggu">Jumlah Minggu (Default ${state.defaultMinggu})</option>
+              <option value="tanggal">Pilih Tanggal Langsung</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group" id="wrapOrdMinggu"><label>Jatuh Tempo (Minggu)</label><input type="number" id="ordMinggu" min="1" value="${state.defaultMinggu}" /></div>
+          <div class="form-group hidden" id="wrapOrdTglDue"><label>Tanggal Jatuh Tempo</label><input type="date" id="ordTglDue" /></div>
+          <div class="form-group"><label>Catatan</label><input type="text" id="ordCatatan" /></div>
+        </div>
+        <div class="card" style="background:#f8fafc;box-shadow:none;">
+          <div class="grid-2">
+            <div><small>Total Pesanan</small><div id="ordPreviewTotal" style="font-size:18px;font-weight:700;">Rp 0</div></div>
+            <div><small>Target Setoran / Minggu</small><div id="ordPreviewTarget" style="font-size:18px;font-weight:700;color:var(--primary);">Rp 0</div></div>
+          </div>
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSubmitOrder">Simpan Order</button>
+      `
+    );
+
+    function renderCustOptions(selectedId, filterText) {
+      const q = (filterText || '').toLowerCase();
+      const filtered = state.customers.filter((c) => !q || c.nama.toLowerCase().includes(q) || c.no_hp.toLowerCase().includes(q));
+      const sel = document.getElementById('ordCustId');
+      sel.innerHTML = filtered.map((c) => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${esc(c.nama)} ${c.no_hp ? '(' + esc(c.no_hp) + ')' : ''}</option>`).join('');
+    }
+    renderCustOptions();
+    document.getElementById('ordCustSearch').oninput = (e) => renderCustOptions('', e.target.value);
+
+    // Tambah customer langsung dari form order tanpa menutup alur
+    document.getElementById('btnQuickAddCust').onclick = async () => {
+      const nama = prompt('Nama Customer Baru:');
+      if (!nama || !nama.trim()) return;
+      const hp = prompt('No. HP Customer (opsional):') || '';
+      try {
+        const created = await runGas('apiSaveCustomer', { nama: nama.trim(), no_hp: hp.trim() });
+        state.customers = await runGas('apiGetCustomers', false);
+        populateRekapanCustomerSelect();
+        renderCustOptions(created.id, '');
+        showToast('Customer baru ditambahkan & dipilih.', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    };
+
+    const allCatalogOptions = [
+      ...state.packages.map((pk) => ({ tipe: 'paket', id: pk.id, label: '[Paket] ' + pk.nama + ' (' + fmtRp(pk.harga_per_minggu) + '/mgg)', harga: pk.harga_per_minggu })),
+      ...state.products.map((p) => ({ tipe: 'produk', id: p.id, label: '[Produk] ' + p.nama + ' / ' + p.satuan, harga: 0 }))
+    ];
+
+    function getCurrentOrderWeeks() {
+      let minggu = Math.max(1, Number(document.getElementById('ordMinggu').value || state.defaultMinggu));
+      if (document.getElementById('ordDueMode').value === 'tanggal') {
+        const t1 = document.getElementById('ordTanggal').value;
+        const t2 = document.getElementById('ordTglDue').value;
+        if (t1 && t2) {
+          const diff = Math.round((new Date(t2) - new Date(t1)) / 86400000);
+          if (diff > 0) minggu = Math.max(1, Math.ceil(diff / 7));
+        }
+      }
+      return minggu;
+    }
+
+    window.addOrdItemRow = () => {
+      const row = document.createElement('div');
+      row.className = 'grid-4 mb-12 ord-item-row';
+      row.style.alignItems = 'center';
+      const opts = allCatalogOptions.map((o, idx) => `<option value="${idx}">${esc(o.label)}</option>`).join('');
+      const first = allCatalogOptions[0];
+      row.innerHTML = `
+        <select class="ord-ref">${opts}</select>
+        <input type="number" class="ord-qty" min="1" step="any" value="1" placeholder="Qty" />
+        <input type="number" class="ord-harga" min="0" value="${first ? first.harga : 0}" placeholder="${first && first.tipe === 'paket' ? 'Harga/Mgg' : 'Harga Total'}" title="${first && first.tipe === 'paket' ? 'Harga per minggu (Rp)' : 'Harga satuan (Rp)'}" />
+        <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove();recalcOrderPreview();">Hapus</button>
+      `;
+      row.querySelector('.ord-ref').onchange = (e) => {
+        const chosen = allCatalogOptions[Number(e.target.value)];
+        const inpHarga = row.querySelector('.ord-harga');
+        inpHarga.value = chosen ? chosen.harga : 0;
+        inpHarga.placeholder = chosen && chosen.tipe === 'paket' ? 'Harga/Mgg' : 'Harga Total';
+        inpHarga.title = chosen && chosen.tipe === 'paket' ? 'Harga per minggu (Rp)' : 'Harga satuan (Rp)';
+        recalcOrderPreview();
+      };
+      row.querySelector('.ord-qty').oninput = recalcOrderPreview;
+      row.querySelector('.ord-harga').oninput = recalcOrderPreview;
+      document.getElementById('ordItemsWrap').appendChild(row);
+      recalcOrderPreview();
+    };
+
+    window.recalcOrderPreview = () => {
+      const minggu = getCurrentOrderWeeks();
+      let sub = 0;
+      document.querySelectorAll('.ord-item-row').forEach((r) => {
+        const chosen = allCatalogOptions[Number(r.querySelector('.ord-ref').value)];
+        const qty = Number(r.querySelector('.ord-qty').value || 0);
+        const hargaInput = Number(r.querySelector('.ord-harga').value || 0);
+        if (chosen && chosen.tipe === 'paket') {
+          sub += qty * hargaInput * minggu;
+        } else {
+          sub += qty * hargaInput;
+        }
+      });
+      const diskon = Number(document.getElementById('ordDiskon').value || 0);
+      const ongkir = Number(document.getElementById('ordOngkir').value || 0);
+      const total = Math.max(0, sub - diskon + ongkir);
+      document.getElementById('ordPreviewTotal').textContent = fmtRp(total);
+      document.getElementById('ordPreviewTarget').textContent = fmtRp(Math.round(total / minggu));
+    };
+
+    document.getElementById('ordDueMode').onchange = (e) => {
+      const isDate = e.target.value === 'tanggal';
+      document.getElementById('wrapOrdMinggu').classList.toggle('hidden', isDate);
+      document.getElementById('wrapOrdTglDue').classList.toggle('hidden', !isDate);
+      recalcOrderPreview();
+    };
+    ['ordDiskon', 'ordOngkir', 'ordMinggu', 'ordTanggal', 'ordTglDue'].forEach((id) => {
+      document.getElementById(id).oninput = recalcOrderPreview;
+    });
+
+    addOrdItemRow();
+
+    const ordReqId = newRequestId();
+    document.getElementById('btnSubmitOrder').onclick = () => withButtonLoading('btnSubmitOrder', 'Menyimpan Order...', async () => {
+      try {
+        const items = [];
+        document.querySelectorAll('.ord-item-row').forEach((r) => {
+          const chosen = allCatalogOptions[Number(r.querySelector('.ord-ref').value)];
+          if (!chosen) return;
+          const hargaInput = Number(r.querySelector('.ord-harga').value || 0);
+          items.push({
+            tipe: chosen.tipe,
+            ref_id: chosen.id,
+            qty: Number(r.querySelector('.ord-qty').value || 0),
+            harga_per_minggu: chosen.tipe === 'paket' ? hargaInput : '',
+            harga: chosen.tipe === 'produk' ? hargaInput : ''
+          });
+        });
+        const dueMode = document.getElementById('ordDueMode').value;
+        await runGas('apiCreateOrder', {
+          request_id: ordReqId,
+          customer_id: document.getElementById('ordCustId').value,
+          tanggal: document.getElementById('ordTanggal').value,
+          items: items,
+          diskon: document.getElementById('ordDiskon').value,
+          ongkir: document.getElementById('ordOngkir').value,
+          jatuh_tempo_minggu: dueMode === 'minggu' ? document.getElementById('ordMinggu').value : '',
+          tgl_jatuh_tempo: dueMode === 'tanggal' ? document.getElementById('ordTglDue').value : '',
+          catatan: document.getElementById('ordCatatan').value
+        });
+        showToast('Order berhasil dibuat.', 'success');
+        closeModal();
+        loadCurrentPage();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  async function openOrderDetail(orderId) {
+    try {
+      const d = await runGas('apiGetOrderDetail', orderId);
+      const o = d.order;
+      const isAdmin = state.user && state.user.role === 'admin';
+      openModal(
+        'Detail Order: ' + o.no_order,
+        `
+          <div class="grid-2 mb-12">
+            <div><strong>Customer:</strong> ${esc(o.customer_nama)}<br><strong>Tanggal:</strong> ${esc(o.tanggal)}<br><strong>Jatuh Tempo:</strong> ${esc(o.tgl_jatuh_tempo)} (${o.jatuh_tempo_minggu} mgg)</div>
+            <div><strong>Status:</strong> ${badgeStatus(o.status)} ${o.status === 'Berjalan' ? badgeStatus(o.penanda) : ''}<br><strong>Target/Minggu:</strong> ${fmtRp(o.target_per_minggu)}<br><strong>Sisa Setoran:</strong> <strong>${fmtRp(o.sisa_setoran)}</strong></div>
+          </div>
+          <h4>Item Pesanan</h4>
+          <div class="table-wrap mb-12">
+            <table>
+              <thead><tr><th>Item</th><th>Tipe</th><th class="text-right">Qty</th><th class="text-right">Harga</th><th class="text-right">Subtotal</th></tr></thead>
+              <tbody>${d.items.map((it) => `<tr><td>${esc(it.nama)}</td><td>${esc(it.tipe)}</td><td class="text-right">${it.qty}</td><td class="text-right">${fmtRp(it.harga)}</td><td class="text-right">${fmtRp(it.subtotal)}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+          <h4>Riwayat Setoran</h4>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>No. Setoran</th><th>Tanggal</th><th>Metode</th><th class="text-right">Nominal</th><th class="text-right">Kumulatif</th></tr></thead>
+              <tbody>${d.setoran.length ? d.setoran.map((s) => `<tr><td>${esc(s.no_setoran)}</td><td>${esc(s.tanggal)}</td><td>${esc(s.metode)}</td><td class="text-right">${fmtRp(s.nominal)}</td><td class="text-right">${fmtRp(s.kumulatif)}</td></tr>`).join('') : '<tr><td colspan="5">Belum ada setoran.</td></tr>'}</tbody>
+            </table>
+          </div>
+        `,
+        `
+          ${o.status !== 'Dibatalkan' && o.status !== 'Sudah Diserahkan' ? `<button class="btn btn-danger" onclick="doCancelOrder('${o.id}', ${o.total_setoran > 0})">Batalkan Order</button>` : ''}
+          ${isAdmin && o.total_setoran === 0 ? `<button class="btn btn-danger" onclick="doDeleteOrder('${o.id}')">Hapus</button>` : ''}
+          <button class="btn btn-secondary" onclick="closeModal()">Tutup</button>
+        `
+      );
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function doCancelOrder(orderId, hasSetoran) {
+    if (!confirm(hasSetoran ? 'Order sudah punya setoran. Yakin ingin membatalkan?' : 'Yakin ingin membatalkan order ini?')) return;
+    try {
+      await runGas('apiCancelOrder', orderId, true);
+      showToast('Order dibatalkan.', 'success');
+      closeModal();
+      loadCurrentPage();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function doDeleteOrder(orderId) {
+    if (!confirm('Hapus permanen order ini?')) return;
+    try {
+      await runGas('apiDeleteOrder', orderId);
+      showToast('Order dihapus.', 'success');
+      closeModal();
+      loadCurrentPage();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // 5. SETORAN
+  async function loadSetoran() {
+    state.setoran = await runGas('apiGetSetoranList', {});
+    renderSetoran();
+  }
+
+  function renderSetoran() {
+    const q = document.getElementById('searchSetoran').value.trim().toLowerCase();
+    const list = state.setoran.filter((s) => !q || s.no_setoran.toLowerCase().includes(q) || s.customer_nama.toLowerCase().includes(q) || s.no_order.toLowerCase().includes(q));
+    document.getElementById('tblSetoran').innerHTML = list.length
+      ? list.map((s) => `
+        <tr>
+          <td><strong>${esc(s.no_setoran)}</strong></td>
+          <td>${esc(s.tanggal)}</td>
+          <td>${esc(s.customer_nama)}</td>
+          <td>${esc(s.no_order)}</td>
+          <td>${esc(s.metode)}</td>
+          <td class="text-right"><strong>${fmtRp(s.nominal)}</strong></td>
+          <td>${esc(s.catatan || '-')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" style="text-align:center;color:var(--muted);">Belum ada data setoran.</td></tr>';
+  }
+
+  async function openSetoranModal(prefCustId, prefOrderId) {
+    let runningOrders = [];
+    try {
+      runningOrders = await runGas('apiGetOrders', { status: 'Berjalan' });
+    } catch (err) {
+      return showToast(err.message, 'error');
+    }
+
+    if (runningOrders.length === 0) {
+      return showToast('Tidak ada order berjalan yang perlu disetor.', 'error');
+    }
+
+    const custIds = new Set(runningOrders.map((o) => o.customer_id));
+    const custList = state.customers.filter((c) => custIds.has(c.id));
+
+    openModal(
+      'Catat Setoran',
+      `
+        <div class="form-group">
+          <label>Customer *</label>
+          <select id="setCustId">
+            ${custList.map((c) => `<option value="${c.id}" ${c.id === prefCustId ? 'selected' : ''}>${esc(c.nama)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Pilih Order Berjalan *</label>
+          <select id="setOrderId"></select>
+          <small id="setOrderInfo" style="color:var(--muted);display:block;margin-top:4px;"></small>
+        </div>
+        <div class="grid-2">
+          <div class="form-group"><label>Tanggal *</label><input type="date" id="setTanggal" value="${todayIso()}" /></div>
+          <div class="form-group"><label>Metode</label><select id="setMetode"><option value="Tunai">Tunai</option><option value="Transfer">Transfer</option></select></div>
+        </div>
+        <div class="form-group"><label>Nominal Setoran (Rp) *</label><input type="number" id="setNominal" min="1" /></div>
+        <div class="form-group"><label>Catatan</label><input type="text" id="setCatatan" /></div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSubmitSetoran">Simpan Setoran</button>
+      `
+    );
+
+    function syncOrdersForCustomer() {
+      const cid = document.getElementById('setCustId').value;
+      const custOrders = runningOrders.filter((o) => o.customer_id === cid);
+      const sel = document.getElementById('setOrderId');
+      sel.innerHTML = custOrders.map((o) => `<option value="${o.id}" ${o.id === prefOrderId ? 'selected' : ''}>${esc(o.no_order)} (Sisa: ${fmtRp(o.sisa_setoran)})</option>`).join('');
+      syncOrderInfo();
+    }
+
+    function syncOrderInfo() {
+      const oid = document.getElementById('setOrderId').value;
+      const ord = runningOrders.find((o) => o.id === oid);
+      if (!ord) return;
+      document.getElementById('setOrderInfo').textContent = `Target/minggu: ${fmtRp(ord.target_per_minggu)} | Sisa setoran: ${fmtRp(ord.sisa_setoran)}`;
+      const nomEl = document.getElementById('setNominal');
+      nomEl.max = ord.sisa_setoran;
+      if (!nomEl.value) nomEl.value = Math.min(ord.target_per_minggu, ord.sisa_setoran);
+    }
+
+    document.getElementById('setCustId').onchange = syncOrdersForCustomer;
+    document.getElementById('setOrderId').onchange = syncOrderInfo;
+    syncOrdersForCustomer();
+
+    const setReqId = newRequestId();
+    document.getElementById('btnSubmitSetoran').onclick = () => withButtonLoading('btnSubmitSetoran', 'Menyimpan Setoran...', async () => {
+      try {
+        const res = await runGas('apiCreateSetoran', {
+          request_id: setReqId,
+          order_id: document.getElementById('setOrderId').value,
+          tanggal: document.getElementById('setTanggal').value,
+          nominal: document.getElementById('setNominal').value,
+          metode: document.getElementById('setMetode').value,
+          catatan: document.getElementById('setCatatan').value
+        });
+        showToast(res.status_order_baru === 'Lunas' ? 'Setoran tercatat. Order LUNAS!' : 'Setoran berhasil dicatat.', 'success');
+        closeModal();
+        loadCurrentPage();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // 6. PENYERAHAN
+  async function loadPenyerahan() {
+    const all = await runGas('apiGetOrders', { status: 'ALL' });
+    const lunas = all.filter((o) => o.status === 'Lunas');
+    const belumLunas = all.filter((o) => o.status === 'Berjalan' && o.hari_menuju_jatuh_tempo <= 30);
+    const sudah = all.filter((o) => o.status === 'Sudah Diserahkan');
+    const isAdmin = state.user && state.user.role === 'admin';
+
+    document.getElementById('tblSiapSerah').innerHTML = lunas.length
+      ? lunas.map((o) => `<tr><td><strong>${esc(o.no_order)}</strong></td><td>${esc(o.customer_nama)}</td><td class="text-right">${fmtRp(o.total)}</td><td>${esc(o.tgl_jatuh_tempo)}</td><td class="text-right"><button class="btn btn-primary btn-sm" onclick="openDeliverModal('${o.id}', false)">Catat Penyerahan</button></td></tr>`).join('')
+      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada order lunas yang menunggu diserahkan.</td></tr>';
+
+    document.getElementById('tblBelumLunasSerah').innerHTML = belumLunas.length
+      ? belumLunas.map((o) => `<tr><td><strong>${esc(o.no_order)}</strong></td><td>${esc(o.customer_nama)}</td><td>${esc(o.tgl_jatuh_tempo)}</td><td class="text-right">${fmtRp(o.sisa_setoran)}</td><td>${badgeStatus(o.penanda)}</td><td class="text-right">${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="openDeliverModal('${o.id}', true)">Serah Khusus</button>` : '<small>Butuh keputusan Admin</small>'}</td></tr>`).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--muted);">Tidak ada order mendekati jatuh tempo yang belum lunas.</td></tr>';
+
+    document.getElementById('tblSudahSerah').innerHTML = sudah.length
+      ? sudah.map((o) => `<tr><td><strong>${esc(o.no_order)}</strong></td><td>${esc(o.customer_nama)}</td><td>${esc(o.tgl_serah)}</td><td>${esc(o.penerima_serah || '-')}</td><td>${esc(o.catatan_serah || '-')}</td></tr>`).join('')
+      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada riwayat penyerahan.</td></tr>';
+  }
+
+  function openDeliverModal(orderId, forceUnpaid) {
+    openModal(
+      forceUnpaid ? 'Penyerahan Khusus (Belum Lunas)' : 'Catat Penyerahan Barang',
+      `
+        <div class="form-group"><label>Tanggal Serah *</label><input type="date" id="delTgl" value="${todayIso()}" /></div>
+        <div class="form-group"><label>Nama Penerima *</label><input type="text" id="delPenerima" placeholder="Nama customer / perwakilan" /></div>
+        <div class="form-group"><label>Catatan</label><textarea id="delCatatan" rows="2"></textarea></div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" id="btnSubmitDeliver">Konfirmasi Sudah Diserahkan</button>
+      `
+    );
+    document.getElementById('btnSubmitDeliver').onclick = () => withButtonLoading('btnSubmitDeliver', 'Menyimpan...', async () => {
+      try {
+        await runGas('apiDeliverOrder', {
+          order_id: orderId,
+          tgl_serah: document.getElementById('delTgl').value,
+          penerima_serah: document.getElementById('delPenerima').value,
+          catatan_serah: document.getElementById('delCatatan').value,
+          force_unpaid: forceUnpaid
+        });
+        showToast('Penyerahan barang tercatat.', 'success');
+        closeModal();
+        loadPenyerahan();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // 7. REKAPAN
+  function populateRekapanCustomerSelect() {
+    const sel = document.getElementById('rekCustomer');
+    sel.innerHTML = '<option value="">Semua Customer</option>' +
+      state.customers.map((c) => `<option value="${c.id}">${esc(c.nama)}</option>`).join('');
+  }
+
+  function getRekapanFilters() {
+    return {
+      dari_tanggal: document.getElementById('rekDari').value,
+      sampai_tanggal: document.getElementById('rekSampai').value,
+      customer_id: document.getElementById('rekCustomer').value,
+      status: document.getElementById('rekStatus').value,
+      periode: document.getElementById('rekPeriode').value
+    };
+  }
+
+  async function loadRekapan() {
+    const data = await runGas('apiGetRekapan', getRekapanFilters());
+    document.getElementById('tblRekKebutuhan').innerHTML = data.kebutuhan_barang.length
+      ? data.kebutuhan_barang.map((r) => `<tr><td>${esc(r.kode)}</td><td><strong>${esc(r.nama)}</strong></td><td>${esc(r.satuan)}</td><td class="text-right"><strong>${r.total_qty}</strong></td></tr>`).join('')
+      : '<tr><td colspan="4" style="text-align:center;color:var(--muted);">Tidak ada kebutuhan barang.</td></tr>';
+
+    document.getElementById('tblRekCustomer').innerHTML = data.per_customer.length
+      ? data.per_customer.map((r) => `<tr><td><strong>${esc(r.customer_nama)}</strong></td><td class="text-right">${r.jumlah_order}</td><td class="text-right">${fmtRp(r.total_pesanan)}</td><td class="text-right">${fmtRp(r.total_setoran)}</td><td class="text-right">${fmtRp(r.sisa_setoran)}</td><td class="text-right">${r.progres_persen}%</td></tr>`).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--muted);">Tidak ada data.</td></tr>';
+
+    document.getElementById('tblRekPeriode').innerHTML = data.per_periode.length
+      ? data.per_periode.map((r) => `<tr><td><strong>${esc(r.periode)}</strong></td><td class="text-right">${r.jumlah_transaksi}</td><td class="text-right">${fmtRp(r.total_nominal)}</td></tr>`).join('')
+      : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Tidak ada setoran pada periode ini.</td></tr>';
+
+    document.getElementById('tblRekItem').innerHTML = data.per_produk_paket.length
+      ? data.per_produk_paket.map((r) => `<tr><td>${esc(r.tipe)}</td><td><strong>${esc(r.nama)}</strong></td><td class="text-right">${r.total_qty}</td><td class="text-right">${fmtRp(r.total_nilai)}</td></tr>`).join('')
+      : '<tr><td colspan="4" style="text-align:center;color:var(--muted);">Tidak ada data item.</td></tr>';
+  }
+
+  async function downloadRekapanCsv() {
+    try {
+      const csv = await runGas('apiGetRekapanCsv', state.rekapanTab, getRekapanFilters());
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'rekapan-' + state.rekapanTab + '-' + todayIso() + '.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function exportRekapanSheet() {
+    try {
+      showToast('Membuat Google Sheets rekapan...', '');
+      const res = await runGas('apiExportRekapanToSheet', getRekapanFilters());
+      showToast('Berhasil diekspor: ' + res.name, 'success');
+      window.open(res.url, '_blank');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // 8. PENGATURAN
+  async function loadSettings() {
+    const rows = await runGas('apiGetSettings');
+    document.getElementById('settingsForm').innerHTML = rows.map((r) => `
+      <div class="form-group">
+        <label>${esc(r.key)} <small style="font-weight:400;">(${esc(r.keterangan)})</small></label>
+        <input class="setting-input" data-key="${esc(r.key)}" value="${esc(r.value)}" />
+      </div>
+    `).join('');
+  }
+
+  async function saveSettingsForm() {
+    try {
+      const entries = [];
+      document.querySelectorAll('.setting-input').forEach((inp) => {
+        entries.push({ key: inp.dataset.key, value: inp.value });
+      });
+      await runGas('apiSaveSettings', entries);
+      showToast('Pengaturan disimpan.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function runBackupNow() {
+    try {
+      showToast('Mencadangkan spreadsheet...', '');
+      const res = await runGas('apiRunBackupNow');
+      showToast('Cadangan dibuat: ' + res.name, 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function enableDailyBackup() {
+    try {
+      await runGas('apiSetupDailyBackupTrigger');
+      showToast('Trigger cadangan harian otomatis pukul 02.00 WIB diaktifkan.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  // Event listeners
+  document.getElementById('menuToggle').onclick = () => {
+    document.getElementById('sidebar').classList.toggle('open');
+  };
+  document.getElementById('btnRefresh').onclick = loadCurrentPage;
+  document.querySelectorAll('.nav-btn').forEach((btn) => {
+    btn.onclick = () => switchPage(btn.dataset.page);
+  });
+
+  document.querySelectorAll('[data-catalog-tab]').forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll('[data-catalog-tab]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.catalogTab;
+      document.getElementById('catalog-produk').classList.toggle('hidden', tab !== 'produk');
+      document.getElementById('catalog-paket').classList.toggle('hidden', tab !== 'paket');
+    };
+  });
+
+  document.querySelectorAll('[data-rek-tab]').forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll('[data-rek-tab]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.rekapanTab = btn.dataset.rekTab;
+      ['kebutuhan', 'customer', 'periode', 'item'].forEach((t) => {
+        document.getElementById('rek-tab-' + t).classList.toggle('hidden', t !== state.rekapanTab);
+      });
+    };
+  });
+
+  document.getElementById('searchCustomer').oninput = loadCustomers;
+  document.getElementById('chkInactiveCustomer').onchange = loadCustomers;
+  document.getElementById('searchProduct').oninput = loadCatalog;
+  document.getElementById('searchPackage').oninput = loadCatalog;
+  document.getElementById('filterOrderStatus').onchange = loadOrders;
+  document.getElementById('searchOrder').oninput = renderOrders;
+  document.getElementById('searchSetoran').oninput = renderSetoran;
+
+  bootstrap();
+</script>

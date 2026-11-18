@@ -1,4 +1,4 @@
-# Grocery Installment & Procurement System (Google Apps Script)
+# Sistem Sembako (Google Apps Script)
 
 A lightweight web application built with **Google Apps Script (GAS)** and **Google Sheets** to manage installment-based grocery (*sembako*) orders ahead of Eid, track weekly payment progress and remaining balances, and aggregate supplier procurement needs.
 

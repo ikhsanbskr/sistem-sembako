@@ -128,13 +128,25 @@
               <input type="text" id="searchProduct" placeholder="Cari produk..." style="max-width:300px;" />
               <button class="btn btn-primary admin-only hidden" onclick="openProductModal()">+ Tambah Produk</button>
             </div>
-            <div class="card">
+            <div class="card mb-12">
+              <h3 class="card-title">Produk Aktif</h3>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr><th>Kode</th><th>Nama Produk</th><th>Satuan</th><th>Status</th><th class="text-right">Aksi</th></tr>
                   </thead>
                   <tbody id="tblProducts"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Produk Nonaktif</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Kode</th><th>Nama Produk</th><th>Satuan</th><th>Status</th><th class="text-right">Aksi</th></tr>
+                  </thead>
+                  <tbody id="tblProductsInactive"></tbody>
                 </table>
               </div>
             </div>
@@ -145,13 +157,25 @@
               <input type="text" id="searchPackage" placeholder="Cari paket..." style="max-width:300px;" />
               <button class="btn btn-primary admin-only hidden" onclick="openPackageModal()">+ Tambah Paket</button>
             </div>
-            <div class="card">
+            <div class="card mb-12">
+              <h3 class="card-title">Paket Aktif</h3>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr><th>Nama Paket</th><th>Isi Produk</th><th class="text-right">Harga / Minggu</th><th>Status</th><th class="text-right">Aksi</th></tr>
                   </thead>
                   <tbody id="tblPackages"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Paket Nonaktif</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Nama Paket</th><th>Isi Produk</th><th class="text-right">Harga / Minggu</th><th>Status</th><th class="text-right">Aksi</th></tr>
+                  </thead>
+                  <tbody id="tblPackagesInactive"></tbody>
                 </table>
               </div>
             </div>

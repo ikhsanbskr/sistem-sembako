@@ -371,12 +371,9 @@
     renderPackages(pkgs);
   }
 
-  function renderProducts(list) {
-    const q = document.getElementById('searchProduct').value.trim().toLowerCase();
-    const isAdmin = state.user && state.user.role === 'admin';
-    const filtered = list.filter((p) => !q || p.nama.toLowerCase().includes(q) || p.kode.toLowerCase().includes(q));
-    document.getElementById('tblProducts').innerHTML = filtered.length
-      ? filtered.map((p) => `
+  function renderProductRows(rows, isAdmin, emptyText) {
+    return rows.length
+      ? rows.map((p) => `
         <tr>
           <td>${esc(p.kode)}</td>
           <td><strong>${esc(p.nama)}</strong></td>
@@ -387,7 +384,17 @@
             <button class="btn btn-secondary btn-sm" onclick="toggleProduct('${p.id}', ${!p.aktif})">${p.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>` : '-'}
           </td>
         </tr>`).join('')
-      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada produk.</td></tr>';
+      : `<tr><td colspan="5" style="text-align:center;color:var(--muted);">${emptyText}</td></tr>`;
+  }
+
+  function renderProducts(list) {
+    const q = document.getElementById('searchProduct').value.trim().toLowerCase();
+    const isAdmin = state.user && state.user.role === 'admin';
+    const filtered = list.filter((p) => !q || p.nama.toLowerCase().includes(q) || p.kode.toLowerCase().includes(q));
+    const active = filtered.filter((p) => p.aktif);
+    const inactive = filtered.filter((p) => !p.aktif);
+    document.getElementById('tblProducts').innerHTML = renderProductRows(active, isAdmin, 'Belum ada produk aktif.');
+    document.getElementById('tblProductsInactive').innerHTML = renderProductRows(inactive, isAdmin, 'Belum ada produk nonaktif.');
   }
 
   function openProductModal(p) {
@@ -435,12 +442,9 @@
     }
   }
 
-  function renderPackages(list) {
-    const q = document.getElementById('searchPackage').value.trim().toLowerCase();
-    const isAdmin = state.user && state.user.role === 'admin';
-    const filtered = list.filter((pk) => !q || pk.nama.toLowerCase().includes(q));
-    document.getElementById('tblPackages').innerHTML = filtered.length
-      ? filtered.map((pk) => `
+  function renderPackageRows(rows, isAdmin, emptyText) {
+    return rows.length
+      ? rows.map((pk) => `
         <tr>
           <td><strong>${esc(pk.nama)}</strong></td>
           <td>${pk.items.map((it) => `${esc(it.produk_nama)} (${it.qty} ${esc(it.satuan)})`).join(', ')}</td>
@@ -451,7 +455,17 @@
             <button class="btn btn-secondary btn-sm" onclick="togglePackage('${pk.id}', ${!pk.aktif})">${pk.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>` : '-'}
           </td>
         </tr>`).join('')
-      : '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Belum ada paket.</td></tr>';
+      : `<tr><td colspan="5" style="text-align:center;color:var(--muted);">${emptyText}</td></tr>`;
+  }
+
+  function renderPackages(list) {
+    const q = document.getElementById('searchPackage').value.trim().toLowerCase();
+    const isAdmin = state.user && state.user.role === 'admin';
+    const filtered = list.filter((pk) => !q || pk.nama.toLowerCase().includes(q));
+    const active = filtered.filter((pk) => pk.aktif);
+    const inactive = filtered.filter((pk) => !pk.aktif);
+    document.getElementById('tblPackages').innerHTML = renderPackageRows(active, isAdmin, 'Belum ada paket aktif.');
+    document.getElementById('tblPackagesInactive').innerHTML = renderPackageRows(inactive, isAdmin, 'Belum ada paket nonaktif.');
   }
 
   function openPackageModal(pk) {
@@ -580,9 +594,9 @@
           </div>
         </div>
         <div class="form-group">
-          <label>Item Pesanan (Produk / Paket)</label>
+          <label>Item Pesanan (Paket)</label>
           <div id="ordItemsWrap"></div>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="addOrdItemRow()">+ Tambah Item</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addOrdItemRow()">+ Tambah Paket</button>
         </div>
         <div class="grid-3">
           <div class="form-group"><label>Diskon (Rp)</label><input type="number" id="ordDiskon" min="0" value="0" /></div>
@@ -638,10 +652,12 @@
       }
     };
 
-    const allCatalogOptions = [
-      ...state.packages.map((pk) => ({ tipe: 'paket', id: pk.id, label: '[Paket] ' + pk.nama + ' (' + fmtRp(pk.harga_per_minggu) + '/mgg)', harga: pk.harga_per_minggu })),
-      ...state.products.map((p) => ({ tipe: 'produk', id: p.id, label: '[Produk] ' + p.nama + ' / ' + p.satuan, harga: 0 }))
-    ];
+    const packageOptions = state.packages.map((pk) => ({
+      tipe: 'paket',
+      id: pk.id,
+      label: pk.nama + ' (' + fmtRp(pk.harga_per_minggu) + '/mgg)',
+      harga: pk.harga_per_minggu
+    }));
 
     function getCurrentOrderWeeks() {
       let minggu = Math.max(1, Number(document.getElementById('ordMinggu').value || state.defaultMinggu));
@@ -660,20 +676,19 @@
       const row = document.createElement('div');
       row.className = 'grid-4 mb-12 ord-item-row';
       row.style.alignItems = 'center';
-      const opts = allCatalogOptions.map((o, idx) => `<option value="${idx}">${esc(o.label)}</option>`).join('');
-      const first = allCatalogOptions[0];
+      const opts = packageOptions.length
+        ? packageOptions.map((o, idx) => `<option value="${idx}">${esc(o.label)}</option>`).join('')
+        : '<option value="">Belum ada paket aktif</option>';
+      const first = packageOptions[0];
       row.innerHTML = `
         <select class="ord-ref">${opts}</select>
         <input type="number" class="ord-qty" min="1" step="any" value="1" placeholder="Qty" />
-        <input type="number" class="ord-harga" min="0" value="${first ? first.harga : 0}" placeholder="${first && first.tipe === 'paket' ? 'Harga/Mgg' : 'Harga Total'}" title="${first && first.tipe === 'paket' ? 'Harga per minggu (Rp)' : 'Harga satuan (Rp)'}" />
+        <input type="number" class="ord-harga" min="0" value="${first ? first.harga : 0}" placeholder="Harga/Mgg" title="Harga per minggu (Rp)" />
         <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove();recalcOrderPreview();">Hapus</button>
       `;
       row.querySelector('.ord-ref').onchange = (e) => {
-        const chosen = allCatalogOptions[Number(e.target.value)];
-        const inpHarga = row.querySelector('.ord-harga');
-        inpHarga.value = chosen ? chosen.harga : 0;
-        inpHarga.placeholder = chosen && chosen.tipe === 'paket' ? 'Harga/Mgg' : 'Harga Total';
-        inpHarga.title = chosen && chosen.tipe === 'paket' ? 'Harga per minggu (Rp)' : 'Harga satuan (Rp)';
+        const chosen = packageOptions[Number(e.target.value)];
+        row.querySelector('.ord-harga').value = chosen ? chosen.harga : 0;
         recalcOrderPreview();
       };
       row.querySelector('.ord-qty').oninput = recalcOrderPreview;
@@ -686,14 +701,12 @@
       const minggu = getCurrentOrderWeeks();
       let sub = 0;
       document.querySelectorAll('.ord-item-row').forEach((r) => {
-        const chosen = allCatalogOptions[Number(r.querySelector('.ord-ref').value)];
+        const refVal = r.querySelector('.ord-ref').value;
+        const chosen = refVal === '' ? null : packageOptions[Number(refVal)];
+        if (!chosen) return;
         const qty = Number(r.querySelector('.ord-qty').value || 0);
         const hargaInput = Number(r.querySelector('.ord-harga').value || 0);
-        if (chosen && chosen.tipe === 'paket') {
-          sub += qty * hargaInput * minggu;
-        } else {
-          sub += qty * hargaInput;
-        }
+        sub += qty * hargaInput * minggu;
       });
       const diskon = Number(document.getElementById('ordDiskon').value || 0);
       const ongkir = Number(document.getElementById('ordOngkir').value || 0);
@@ -719,15 +732,15 @@
       try {
         const items = [];
         document.querySelectorAll('.ord-item-row').forEach((r) => {
-          const chosen = allCatalogOptions[Number(r.querySelector('.ord-ref').value)];
+          const refVal = r.querySelector('.ord-ref').value;
+          const chosen = refVal === '' ? null : packageOptions[Number(refVal)];
           if (!chosen) return;
           const hargaInput = Number(r.querySelector('.ord-harga').value || 0);
           items.push({
-            tipe: chosen.tipe,
+            tipe: 'paket',
             ref_id: chosen.id,
             qty: Number(r.querySelector('.ord-qty').value || 0),
-            harga_per_minggu: chosen.tipe === 'paket' ? hargaInput : '',
-            harga: chosen.tipe === 'produk' ? hargaInput : ''
+            harga_per_minggu: hargaInput
           });
         });
         const dueMode = document.getElementById('ordDueMode').value;

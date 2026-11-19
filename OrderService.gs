@@ -137,7 +137,7 @@ function createOrder(payload) {
   requireAuth();
   if (!payload || !payload.customer_id) throw new Error('Customer wajib dipilih.');
   const items = Array.isArray(payload.items) ? payload.items : [];
-  if (items.length === 0) throw new Error('Minimal harus ada 1 item produk atau paket.');
+  if (items.length === 0) throw new Error('Minimal harus ada 1 item paket.');
 
   return withIdempotentLock(payload.request_id, () => {
     const customers = sheetToObjects(SHEET_NAMES.CUSTOMER, true);
@@ -147,10 +147,6 @@ function createOrder(payload) {
     const tanggal = payload.tanggal ? formatDateIso(payload.tanggal) : formatDateIso(new Date());
     const due = computeDueDates(tanggal, payload.jatuh_tempo_minggu, payload.tgl_jatuh_tempo);
 
-    const produkMap = {};
-    sheetToObjects(SHEET_NAMES.PRODUK, true).forEach((p) => {
-      produkMap[p.id] = p;
-    });
     const paketMap = {};
     sheetToObjects(SHEET_NAMES.PAKET, true).forEach((pk) => {
       paketMap[pk.id] = pk;
@@ -159,28 +155,24 @@ function createOrder(payload) {
     let subtotalItems = 0;
     const orderId = generateId('ORD');
     const orderItems = items.map((it) => {
-      const tipe = it.tipe === 'paket' ? 'paket' : 'produk';
-      const ref = tipe === 'paket' ? paketMap[it.ref_id] : produkMap[it.ref_id];
-      if (!ref) throw new Error('Item ' + tipe + ' tidak ditemukan.');
+      if (it.tipe && it.tipe !== 'paket') {
+        throw new Error('Order hanya dapat memilih paket.');
+      }
+      const tipe = 'paket';
+      const ref = paketMap[it.ref_id];
+      if (!ref) throw new Error('Item paket tidak ditemukan.');
 
       const qty = toNumber(it.qty, 0);
       if (qty <= 0) throw new Error('Qty item harus lebih dari 0.');
 
       // Snapshot harga saat transaksi:
-      // - Untuk paket: harga master adalah harga_per_minggu, sehingga harga per paket = harga_per_minggu * jatuh_tempo_minggu
-      // - Untuk produk: harga satuan diisi manual di form order (default 0)
-      let harga;
-      if (tipe === 'paket') {
-        const masterWeekly = toNumber(ref.harga_per_minggu !== undefined ? ref.harga_per_minggu : ref.harga, 0);
-        const hargaPerMinggu = it.harga_per_minggu !== undefined && it.harga_per_minggu !== ''
-          ? toNumber(it.harga_per_minggu, 0)
-          : masterWeekly;
-        if (hargaPerMinggu < 0) throw new Error('Harga paket per minggu tidak valid.');
-        harga = hargaPerMinggu * due.jatuh_tempo_minggu;
-      } else {
-        harga = it.harga !== undefined && it.harga !== '' ? toNumber(it.harga, 0) : 0;
-        if (harga < 0) throw new Error('Harga item tidak valid.');
-      }
+      // Untuk paket, harga master adalah harga_per_minggu sehingga harga per paket = harga_per_minggu * jatuh_tempo_minggu
+      const masterWeekly = toNumber(ref.harga_per_minggu !== undefined ? ref.harga_per_minggu : ref.harga, 0);
+      const hargaPerMinggu = it.harga_per_minggu !== undefined && it.harga_per_minggu !== ''
+        ? toNumber(it.harga_per_minggu, 0)
+        : masterWeekly;
+      if (hargaPerMinggu < 0) throw new Error('Harga paket per minggu tidak valid.');
+      const harga = hargaPerMinggu * due.jatuh_tempo_minggu;
       const subtotal = qty * harga;
       subtotalItems += subtotal;
 
